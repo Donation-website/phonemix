@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Liquid Photo Pro - Global Edition</title>
+    
+    <script src="https://js.stripe.com/v3/"></script>
+    
+    <style>
+        :root {
+            --primary: #6366f1;
+            --accent: #f43f5e;
+            --bg: #0f172a;
+        }
+
+        body {
+            background-color: var(--bg);
+            color: white;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Glassmorphism UI */
+        .ui-overlay {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            display: flex;
+            gap: 15px;
+            padding: 15px 25px;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(15px);
+            border-radius: 50px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+
+        .btn {
+            border: none;
+            padding: 12px 24px;
+            border-radius: 30px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-size: 12px;
+        }
+
+        .btn-upload { background: white; color: var(--bg); }
+        .btn-save { background: var(--primary); color: white; }
+        .btn-premium { background: var(--accent); color: white; animation: pulse 2s infinite; }
+
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.4); }
+            70% { box-shadow: 0 0 0 15px rgba(244, 63, 94, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(244, 63, 94, 0); }
+        }
+
+        #fluid-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+
+    <canvas id="fluid-canvas"></canvas>
+
+    <div class="ui-overlay">
+        <label for="uploader" class="btn btn-upload">Import Photo</label>
+        <input type="file" id="uploader" class="hidden" accept="image/*">
+        
+        <button id="saveBtn" class="btn btn-save">Export GIF</button>
+        <button id="buyBtn" class="btn btn-premium">Unlock 4K & No Ads</button>
+    </div>
+
+    <script type="module">
+        // Ebben a szekcióban importálnánk a professzionális WebGL motort
+        // Pl: import FluidSimulation from './fluid-engine.js';
+
+        const stripe = Stripe('pk_live_TÖLTSD_KI_A_KULCSODDAL');
+        let isPremium = false;
+
+        // 1. ÜZLETI LOGIKA: STRIPE FIZETÉS
+        document.getElementById('buyBtn').addEventListener('click', async () => {
+            // Szerver nélküli Stripe Checkout irányítás
+            // A Stripe Dashboard-on létrehozott Payment Link-et használjuk
+            window.location.href = 'https://buy.stripe.com/your_unique_id';
+        });
+
+        // 2. EXPORT LOGIKA
+        document.getElementById('saveBtn').addEventListener('click', () => {
+            if (!isPremium) {
+                alert("Please unlock Premium for HD Exports!");
+                return;
+            }
+            // Itt futna a MediaRecorder API, ami lementi a vásznat videóként
+            saveCanvasAsVideo();
+        });
+
+        // 3. GYORSULÁSMÉRŐ (ACCELEROMETER) INTEGRÁCIÓ
+        if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+            // iOS 13+ esetén engedélyt kell kérni
+            document.body.addEventListener('click', () => {
+                DeviceOrientationEvent.requestPermission()
+                    .then(response => {
+                        if (response === 'granted') {
+                            window.addEventListener('deviceorientation', (e) => {
+                                // Itt küldjük a gravitációs adatokat a WebGL shadernek
+                                // fluid.updateGravity(e.gamma, e.beta);
+                            });
+                        }
+                    });
+            }, { once: true });
+        }
+
+    </script>
+</body>
+</html>

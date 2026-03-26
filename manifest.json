@@ -1,0 +1,23 @@
+{
+  "name": "Liquid Photo Pro",
+  "short_name": "LiquidPhoto",
+  "description": "Professional fluid simulation for your photos.",
+  "start_url": "index.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f172a",
+  "theme_color": "#6366f1",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/871/871377.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/871/871377.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

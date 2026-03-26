@@ -1,47 +1,218 @@
-// Fluid Simulation Engine - Core Logic
-// Ez a modul felel a GPU-alapú számításokért
+/**
+ * Liquid Photo Pro - GPU Fluid Engine (Navier-Stokes Solver)
+ * Optimized for WebGL 2.0 / Serverless / PWA
+ */
 
 export default class FluidEngine {
     constructor(canvas) {
         this.canvas = canvas;
-        this.gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
-        if (!this.gl) alert("WebGL not supported on this device.");
-        
+        this.gl = canvas.getContext('webgl2', { alpha: false, depth: false, antialias: false });
+        if (!this.gl) throw new Error("WebGL 2.0 required");
+
         this.params = {
-            SIM_RESOLUTION: 128,
-            DYE_RESOLUTION: 1024,
-            DENSITY_DISSIPATION: 1,
-            VELOCITY_DISSIPATION: 0.2,
+            SIM_RES: 128,
+            DYE_RES: 512,
+            DENSITY_DISSIPATION: 0.98,
+            VELOCITY_DISSIPATION: 0.99,
             PRESSURE: 0.8,
             CURL: 30,
-            SPLAT_RADIUS: 0.25,
-            SHADING: true
+            SPLAT_RADIUS: 0.01
         };
-        
+
+        this.pointers = [];
+        this.gravity = { x: 0, y: 0 };
         this.init();
+        this.setupEvents();
     }
 
     init() {
-        // Itt inicializáljuk a WebGL programokat (Vertex és Fragment shaderek)
-        // A profi verzióban itt töltjük be a "Framebuffereket" a folyadékhoz
-        console.log("Fluid Engine Initialized on GPU");
+        const gl = this.gl;
+
+        // 1. SHADER PROGRAMS (A GPU-nak szóló utasítások)
+        this.programs = {
+            advection: this.createProgram(this.baseVS, this.advectionFS),
+            splat: this.createProgram(this.baseVS, this.splatFS),
+            vorticity: this.createProgram(this.baseVS, this.vorticityFS),
+            divergence: this.createProgram(this.baseVS, this.divergenceFS),
+            pressure: this.createProgram(this.baseVS, this.pressureFS),
+            gradient: this.createProgram(this.baseVS, this.gradientFS),
+            display: this.createProgram(this.baseVS, this.displayFS)
+        };
+
+        // 2. FRAMEBUFFERS (Memória a szimulációnak)
+        this.velocity = this.createDoubleFBO(this.params.SIM_RES, this.params.SIM_RES);
+        this.density = this.createDoubleFBO(this.params.DYE_RES, this.params.DYE_RES);
+        this.divergence = this.createFBO(this.params.SIM_RES, this.params.SIM_RES);
+        this.pressure = this.createDoubleFBO(this.params.SIM_RES, this.params.SIM_RES);
+
+        this.initQuad();
     }
 
-    // A kép textúraként való betöltése a szimulációba
-    loadImage(imageElement) {
-        // Ez a függvény konvertálja a fotódat WebGL textúrává,
-        // amit aztán a szimuláció "el tud mosni"
-        console.log("Image injected into fluid simulation");
+    // A kép betöltése a sűrűség (density) rétegbe
+    setBaseImage(image) {
+        const gl = this.gl;
+        this.gl.activeTexture(gl.TEXTURE0);
+        this.gl.bindTexture(gl.TEXTURE_2D, this.density.read.texture);
+        this.gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, image);
     }
 
-    // Gravitációs vektor frissítése (iPhone döntögetéshez)
     updateGravity(gx, gy) {
-        // gx, gy az accelerometer adatai
-        // Ezt hozzáadjuk a folyadék sebesség-mezőjéhez (velocity field)
+        // Gyorsulásmérő adatok simítása
+        this.gravity.x = gx * 2.0; 
+        this.gravity.y = -gy * 2.0; 
+    }
+
+    run() {
+        const step = () => {
+            this.update();
+            this.render();
+            requestAnimationFrame(step);
+        };
+        step();
+    }
+
+    update() {
+        const gl = this.gl;
+        
+        // --- 1. Velocity Advection (Mozgás átvitele) ---
+        gl.useProgram(this.programs.advection);
+        gl.uniform1f(gl.getUniformLocation(this.programs.advection, 'uDissipation'), this.params.VELOCITY_DISSIPATION);
+        this.renderTo(this.velocity.write, this.programs.advection, { uTarget: this.velocity.read.texture, uVelocity: this.velocity.read.texture });
+        this.velocity.swap();
+
+        // --- 2. Density Advection (Színek mozgatása) ---
+        gl.uniform1f(gl.getUniformLocation(this.programs.advection, 'uDissipation'), this.params.DENSITY_DISSIPATION);
+        this.renderTo(this.density.write, this.programs.advection, { uTarget: this.density.read.texture, uVelocity: this.velocity.read.texture });
+        this.density.swap();
+
+        // --- 3. Splats (Ujj érintés & Gravitáció) ---
+        this.pointers.forEach(p => {
+            if (p.moved) {
+                this.splat(p.x, p.y, p.dx, p.dy, p.color);
+                p.moved = false;
+            }
+        });
+
+        if (Math.abs(this.gravity.x) > 0.1 || Math.abs(this.gravity.y) > 0.1) {
+            this.applyGravity();
+        }
+
+        // --- 4. Pressure & Divergence (Fizikai kényszerek) ---
+        this.renderTo(this.divergence, this.programs.divergence, { uVelocity: this.velocity.read.texture });
+        
+        gl.useProgram(this.programs.pressure);
+        for (let i = 0; i < 20; i++) {
+            this.renderTo(this.pressure.write, this.programs.pressure, { uPressure: this.pressure.read.texture, uDivergence: this.divergence.texture });
+            this.pressure.swap();
+        }
+
+        this.renderTo(this.velocity.write, this.programs.gradient, { uPressure: this.pressure.read.texture, uVelocity: this.velocity.read.texture });
+        this.velocity.swap();
     }
 
     render() {
-        // A folyamatos animációs ciklus
-        requestAnimationFrame(() => this.render());
+        const gl = this.gl;
+        gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+        this.renderTo(null, this.programs.display, { uTexture: this.density.read.texture });
     }
+
+    // --- SEGÉDFÜGGVÉNYEK ÉS SHADEREK ---
+
+    splat(x, y, dx, dy, color) {
+        this.renderTo(this.velocity.write, this.programs.splat, { uTarget: this.velocity.read.texture, aspect: this.canvas.width/this.canvas.height, point: [x, y], color: [dx, dy, 0], radius: this.params.SPLAT_RADIUS });
+        this.velocity.swap();
+        this.renderTo(this.density.write, this.programs.splat, { uTarget: this.density.read.texture, aspect: this.canvas.width/this.canvas.height, point: [x, y], color: [color.r, color.g, color.b], radius: this.params.SPLAT_RADIUS });
+        this.density.swap();
+    }
+
+    applyGravity() {
+        this.renderTo(this.velocity.write, this.programs.splat, { uTarget: this.velocity.read.texture, aspect: 1, point: [0.5, 0.5], color: [this.gravity.x, this.gravity.y, 0], radius: 2.0 });
+        this.velocity.swap();
+    }
+
+    setupEvents() {
+        this.canvas.addEventListener('mousemove', e => {
+            this.updatePointer(0, e.offsetX, e.offsetY);
+        });
+        this.canvas.addEventListener('touchmove', e => {
+            e.preventDefault();
+            this.updatePointer(0, e.touches[0].clientX, e.touches[0].clientY);
+        }, { passive: false });
+    }
+
+    updatePointer(id, x, y) {
+        let p = this.pointers[id] || { x: 0, y: 0, dx: 0, dy: 0, color: { r: 1, g: 1, b: 1 }, moved: false };
+        p.dx = (x / this.canvas.clientWidth - p.x) * 5.0;
+        p.dy = (1.0 - y / this.canvas.clientHeight - p.y) * 5.0;
+        p.x = x / this.canvas.clientWidth;
+        p.y = 1.0 - y / this.canvas.clientHeight;
+        p.moved = true;
+        this.pointers[id] = p;
+    }
+
+    // --- WEBGL UTILS (Szerkezeti elemek) ---
+
+    createProgram(vsSource, fsSource) {
+        const gl = this.gl;
+        const vs = gl.createShader(gl.VERTEX_SHADER);
+        gl.shaderSource(vs, vsSource); gl.compileShader(vs);
+        const fs = gl.createShader(gl.FRAGMENT_SHADER);
+        gl.shaderSource(fs, fsSource); gl.compileShader(fs);
+        const prog = gl.createProgram();
+        gl.attachShader(prog, vs); gl.attachShader(prog, fs);
+        gl.linkProgram(prog);
+        return prog;
+    }
+
+    createFBO(w, h) {
+        const gl = this.gl;
+        const texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        const fbo = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+        return { texture, fbo, w, h };
+    }
+
+    createDoubleFBO(w, h) {
+        let fbo1 = this.createFBO(w, h);
+        let fbo2 = this.createFBO(w, h);
+        return { read: fbo1, write: fbo2, swap() { let t = fbo1; fbo1 = fbo2; fbo2 = t; this.read = fbo1; this.write = fbo2; } };
+    }
+
+    renderTo(target, program, uniforms) {
+        const gl = this.gl;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, target ? target.fbo : null);
+        gl.viewport(0, 0, target ? target.w : this.canvas.width, target ? target.h : this.canvas.height);
+        gl.useProgram(program);
+        Object.keys(uniforms).forEach(name => {
+            const loc = gl.getUniformLocation(program, name);
+            const val = uniforms[name];
+            if (Array.isArray(val)) gl.uniform2fv(loc, val);
+            else if (typeof val === 'number') gl.uniform1f(loc, val);
+            else { gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, val); gl.uniform1i(loc, 0); }
+        });
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+
+    initQuad() {
+        const gl = this.gl;
+        gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(0);
+        gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    }
+
+    // --- SHADER SOURCES (A "mágia" szöveges formában) ---
+
+    get baseVS() { return `#version 300 es\nprecision highp float; layout(location=0) in vec2 pos; out vec2 vUv; void main() { vUv = pos * 0.5 + 0.5; gl_Position = vec4(pos, 0.0, 1.0); }`; }
+    get advectionFS() { return `#version 300 es\nprecision highp float; in vec2 vUv; uniform sampler2D uTarget; uniform sampler2D uVelocity; uniform float uDissipation; out vec4 outCol; void main() { vec2 coord = vUv - texture(uVelocity, vUv).xy * 0.001; outCol = texture(uTarget, coord) * uDissipation; }`; }
+    get splatFS() { return `#version 300 es\nprecision highp float; in vec2 vUv; uniform sampler2D uTarget; uniform vec2 point; uniform vec3 color; uniform float radius; out vec4 outCol; void main() { float d = exp(-dot(vUv - point, vUv - point) / radius); outCol = texture(uTarget, vUv) + vec4(color * d, 1.0); }`; }
+    get divergenceFS() { return `#version 300 es\nprecision highp float; in vec2 vUv; uniform sampler2D uVelocity; out vec4 outCol; void main() { float L = texture(uVelocity, vUv - vec2(0.01,0)).x; float R = texture(uVelocity, vUv + vec2(0.01,0)).x; float T = texture(uVelocity, vUv + vec2(0,0.01)).y; float B = texture(uVelocity, vUv - vec2(0,0.01)).y; outCol = vec4(0.5 * (R - L + T - B), 0, 0, 1); }`; }
+    get pressureFS() { return `#version 300 es\nprecision highp float; in vec2 vUv; uniform sampler2D uPressure; uniform sampler2D uDivergence; out vec4 outCol; void main() { float L = texture(uPressure, vUv - vec2(0.01,0)).x; float R = texture(uPressure, vUv + vec2(0.01,0)).x; float T = texture(uPressure, vUv + vec2(0,0.01)).x; float B = texture(uPressure, vUv - vec2(0,0.01)).x; float d = texture(uDivergence, vUv).x; outCol = vec4(0.25 * (L + R + B + T - d), 0, 0, 1); }`; }
+    get gradientFS() { return `#version 300 es\nprecision highp float; in vec2 vUv; uniform sampler2D uPressure; uniform sampler2D uVelocity; out vec4 outCol; void main() { float L = texture(uPressure, vUv - vec2(0.01,0)).x; float R = texture(uPressure, vUv + vec2(0.01,0)).x; float T = texture(uPressure, vUv + vec2(0,0.01)).x; float B = texture(uPressure, vUv - vec2(0,0.01)).x; outCol = texture(uVelocity, vUv) - vec4(R - L, T - B, 0, 0); }`; }
+    get displayFS() { return `#version 300 es\nprecision highp float; in vec2 vUv; uniform sampler2D uTexture; out vec4 outCol; void main() { outCol = texture(uTexture, vUv); }`; }
 }

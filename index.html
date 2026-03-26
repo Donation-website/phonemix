@@ -5,6 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Liquid Photo Pro - Global Edition</title>
     
+    <link rel="manifest" href="manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="apple-touch-icon" href="icon-192.png">
+
     <script src="https://js.stripe.com/v3/"></script>
     
     <style>
@@ -12,122 +17,195 @@
             --primary: #6366f1;
             --accent: #f43f5e;
             --bg: #0f172a;
+            --glass: rgba(255, 255, 255, 0.1);
         }
 
-        body {
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
             background-color: var(--bg);
             color: white;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            margin: 0;
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
+            font-family: -apple-system, system-ui, sans-serif;
             overflow: hidden;
+            touch-action: none;
         }
 
-        /* Glassmorphism UI */
+        /* The background fluid canvas */
+        #fluid-canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+
+        /* Floating UI Overlay */
         .ui-overlay {
             position: absolute;
-            bottom: 30px;
+            bottom: 40px;
             left: 50%;
             transform: translateX(-50%);
             z-index: 10;
             display: flex;
-            gap: 15px;
-            padding: 15px 25px;
-            background: rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(15px);
-            border-radius: 50px;
+            gap: 12px;
+            padding: 12px 20px;
+            background: var(--glass);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-radius: 40px;
             border: 1px solid rgba(255, 255, 255, 0.2);
-            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+            width: max-content;
         }
 
         .btn {
             border: none;
-            padding: 12px 24px;
+            padding: 14px 22px;
             border-radius: 30px;
-            font-weight: 600;
+            font-weight: 700;
+            font-size: 13px;
             cursor: pointer;
-            transition: all 0.3s ease;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
             text-transform: uppercase;
-            letter-spacing: 1px;
-            font-size: 12px;
+            letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            white-space: nowrap;
         }
+
+        .btn:active { transform: scale(0.92); }
 
         .btn-upload { background: white; color: var(--bg); }
         .btn-save { background: var(--primary); color: white; }
-        .btn-premium { background: var(--accent); color: white; animation: pulse 2s infinite; }
-
-        @keyframes pulse {
-            0% { box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.4); }
-            70% { box-shadow: 0 0 0 15px rgba(244, 63, 94, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(244, 63, 94, 0); }
+        .btn-premium { 
+            background: var(--accent); 
+            color: white; 
+            animation: pulse 2s infinite; 
+            box-shadow: 0 0 15px rgba(244, 63, 94, 0.5);
         }
 
-        #fluid-canvas {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: 1;
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
         }
 
         .hidden { display: none; }
+
+        /* Notification Toast */
+        #toast {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%) translateY(-100px);
+            background: rgba(0,0,0,0.8);
+            padding: 12px 24px;
+            border-radius: 20px;
+            transition: transform 0.3s ease;
+            z-index: 100;
+        }
+        #toast.show { transform: translateX(-50%) translateY(0); }
     </style>
 </head>
 <body>
 
+    <div id="toast">Premium unlocked!</div>
+
     <canvas id="fluid-canvas"></canvas>
 
     <div class="ui-overlay">
-        <label for="uploader" class="btn btn-upload">Import Photo</label>
+        <label for="uploader" class="btn btn-upload">Import</label>
         <input type="file" id="uploader" class="hidden" accept="image/*">
         
-        <button id="saveBtn" class="btn btn-save">Export GIF</button>
-        <button id="buyBtn" class="btn btn-premium">Unlock 4K & No Ads</button>
+        <button id="saveBtn" class="btn btn-save">Export</button>
+        <button id="buyBtn" class="btn btn-premium">Get 4K</button>
     </div>
 
     <script type="module">
-        // Ebben a szekcióban importálnánk a professzionális WebGL motort
-        // Pl: import FluidSimulation from './fluid-engine.js';
+        import FluidEngine from './fluid.js';
 
-        const stripe = Stripe('pk_live_TÖLTSD_KI_A_KULCSODDAL');
+        // 1. Initialize Engine
+        const canvas = document.getElementById('fluid-canvas');
+        const engine = new FluidEngine(canvas);
+        engine.run(); // Start the WebGL loop
+
+        // 2. Stripe Configuration
+        const stripe = Stripe('pk_live_YOUR_KEY'); // Replace with real key
         let isPremium = false;
 
-        // 1. ÜZLETI LOGIKA: STRIPE FIZETÉS
-        document.getElementById('buyBtn').addEventListener('click', async () => {
-            // Szerver nélküli Stripe Checkout irányítás
-            // A Stripe Dashboard-on létrehozott Payment Link-et használjuk
-            window.location.href = 'https://buy.stripe.com/your_unique_id';
+        // Check for premium status in LocalStorage (Serverless check)
+        if(localStorage.getItem('isPremium') === 'true') {
+            isPremium = true;
+            document.getElementById('buyBtn').classList.add('hidden');
+        }
+
+        // 3. User Interactions
+        const uploader = document.getElementById('uploader');
+        const saveBtn = document.getElementById('saveBtn');
+        const buyBtn = document.getElementById('buyBtn');
+
+        // Handle Image Upload
+        uploader.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const url = URL.createObjectURL(file);
+                const img = new Image();
+                img.onload = () => {
+                    engine.setBaseImage(img);
+                    URL.revokeObjectURL(url);
+                };
+                img.src = url;
+            }
         });
 
-        // 2. EXPORT LOGIKA
-        document.getElementById('saveBtn').addEventListener('click', () => {
+        // Handle Export
+        saveBtn.addEventListener('click', () => {
             if (!isPremium) {
-                alert("Please unlock Premium for HD Exports!");
+                showToast("Premium required for HD Export");
                 return;
             }
-            // Itt futna a MediaRecorder API, ami lementi a vásznat videóként
-            saveCanvasAsVideo();
+            const dataUrl = canvas.toDataURL("image/png");
+            const link = document.createElement('a');
+            link.download = 'liquid-art.png';
+            link.href = dataUrl;
+            link.click();
         });
 
-        // 3. GYORSULÁSMÉRŐ (ACCELEROMETER) INTEGRÁCIÓ
-        if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-            // iOS 13+ esetén engedélyt kell kérni
-            document.body.addEventListener('click', () => {
+        // Handle Stripe Checkout
+        buyBtn.addEventListener('click', () => {
+            // Replace with your Stripe Payment Link
+            window.location.href = 'https://buy.stripe.com/test_6oEcN68fX';
+        });
+
+        // 4. Mobile Gravity (Accelerometer) logic
+        const requestGravity = () => {
+            if (typeof DeviceOrientationEvent !== 'undefined' && 
+                typeof DeviceOrientationEvent.requestPermission === 'function') {
                 DeviceOrientationEvent.requestPermission()
                     .then(response => {
                         if (response === 'granted') {
                             window.addEventListener('deviceorientation', (e) => {
-                                // Itt küldjük a gravitációs adatokat a WebGL shadernek
-                                // fluid.updateGravity(e.gamma, e.beta);
+                                // Map tilt to fluid force
+                                engine.updateGravity(e.gamma * 0.1, e.beta * 0.1);
                             });
                         }
                     });
-            }, { once: true });
-        }
+            }
+        };
 
+        // Activate sensors on first touch
+        document.body.addEventListener('touchstart', requestGravity, { once: true });
+
+        function showToast(msg) {
+            const t = document.getElementById('toast');
+            t.innerText = msg;
+            t.classList.add('show');
+            setTimeout(() => t.classList.remove('show'), 3000);
+        }
     </script>
 </body>
 </html>
